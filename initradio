@@ -1,0 +1,234 @@
+#!/usr/bin/env python3
+import syslog
+import os
+import serial
+import json
+import argparse
+import datetime
+import ISS_Info
+import codecs
+from random import uniform
+import time
+from time import time, ctime, mktime, sleep
+syslog.openlog("initradio", facility=syslog.LOG_DAEMON)
+latitude = 41.4118
+longitude = -71.2398
+altitude = 20
+
+#os.system('sudo mkdir /dev/shm/TQ')
+#os.system('sudo mount -a')
+def initradio(tx,rx,wide):
+	ser = serial.Serial('/dev/serial0',9600,timeout=2)
+	syslog.syslog(syslog.LOG_INFO, 'Initializing radio connection')
+	attempts = 0
+	while attempts < 3:
+		try:
+			success = False
+			ser.write(b'AT+DMOCONNECT\r\n')
+			resp = str(codecs.decode(ser.readline()))[0:13]
+			#syslog.syslog(syslog.LOG_INFO, resp)
+			if resp == '+DMOCONNECT:0':
+				success = True
+		except:
+			attempts += 1
+			syslog.syslog(syslog.LOG_ERR, 'Initialization failed, retrying...: ' + resp)
+			#add power cycle radio routine here
+			continue
+		else:
+			if success:
+				syslog.syslog(syslog.LOG_INFO, 'Link to radio established.')
+			break
+		finally:
+			if not success:
+				syslog.syslog(syslog.LOG_ERR, 'Radio non responsive!  Shutting down: ' + resp)
+				os.system('sudo systemctl stop direwolf')
+				#add power off radio routine here
+				exit()
+	attempts = 0
+	success = False
+	ser.write(b'AT+VERSION\r\n')
+	resp = str(codecs.decode(ser.readline()))[0:21]
+	syslog.syslog(syslog.LOG_INFO, resp)
+	while attempts < 3:
+		try:
+			success = False
+			syslog.syslog(syslog.LOG_INFO, 'Setting radio to TX ' + str(tx) +' mhz and RX ' + str(rx) + ' mhz')
+			setgroup = str.encode('AT+DMOSETGROUP=' + wide + ',' + tx + ',' + rx + ',0000,1,0000\r\n') 
+			ser.write(setgroup)
+			resp = str(codecs.decode(ser.readline()))[0:14]
+			#syslog.syslog(syslog.LOG_INFO, resp)
+			if resp == '+DMOSETGROUP:0':
+				success = True
+		except:
+			attempts += 1
+			syslog.syslog(syslog.LOG_ERR, 'Tuning to frequency failed, retrying...: ' + resp)
+			#add power cycle radio routine here
+			continue
+		else:
+			if success:
+				syslog.syslog(syslog.LOG_INFO, 'Radio successfully tuned to TX ' + str(tx) + ' Mhz / RX ' + str(rx) + ' Mhz')
+			break
+		finally:
+			if not success:
+				syslog.syslog(syslog.LOG_ERR, 'Tuning frequency failed!  Shutting down: ' + resp)
+				os.system('sudo systemctl stop direwolf')
+				exit()
+	attempts = 0
+	success = False
+	while attempts < 3:
+		try:
+			success = False
+			ser.write(b'AT+SETFILTER=1,1,1\r\n')
+			#with filters 1 = off, 0 = on per DRA-818v datasheet
+			resp = str(codecs.decode(ser.readline()))[0:15]
+			#syslog.syslog(syslog.LOG_INFO, resp)
+			if resp == '+DMOSETFILTER:0':
+				success = True
+		except:
+			attempts += 1
+			syslog.syslog(syslog.LOG_ERR, 'Set audio filters failed, retrying...: ' + resp)
+			continue
+		else:
+			if success:
+				syslog.syslog(syslog.LOG_INFO, 'Turned off pre/de-emphasis, highpass, and lowpass filters')
+			break
+		finally:
+			if not success:
+				syslog.syslog(syslog.LOG_ERR, 'Set audio filters failed.  Ignoring: ' + resp)
+	attempts = 0
+	while attempts < 3:
+		try:
+			success = False
+			ser.write(b'AT+DMOSETVOLUME=3\r\n')
+			resp = str(codecs.decode(ser.readline()))[0:15]
+			#syslog.syslog(syslog.LOG_INFO, resp)
+			if resp == '+DMOSETVOLUME:0':
+				success = True
+		except:
+			attempts += 1
+			syslog.syslog(syslog.LOG_ERR, 'Failed to set volume, retrying...:' + resp)
+			continue
+		else:
+			if success:
+				syslog.syslog(syslog.LOG_INFO, 'Set volume level to 3')
+			break
+		finally:
+			if not success:
+				syslog.syslog(syslog.LOG_ERR, 'Failed to set volume.  Ignoring: ' + resp)
+	ser.close()
+	return()
+
+def waitforit(eventtime):
+	current = mktime(datetime.datetime.now().timetuple())
+	if eventtime <= current:
+		delay = 0
+		syslog.syslog(syslog.LOG_INFO, "The ISS is passing overhead now, proceeding to acquire target")
+	else:
+		delta = eventtime - current
+		delay = max(0, delta - 5)
+		seconds = delay % (24 * 3600)
+		hours = seconds // 3600
+		seconds %= 3600
+		minutes = seconds // 60
+		seconds %= 60
+		syslog.syslog(syslog.LOG_INFO, "Waiting " + str(int(hours)) + " hours " + str(int(minutes)) + " minutes " + str(int(seconds)) + " seconds to acquire target on " + ctime(eventtime))
+		sleep(delay)
+		syslog.syslog(syslog.LOG_INFO, "The ISS is passing overhead now, proceeding to acquire target")
+	return()
+
+def profile(mode):
+	os.system ('sudo mount -o remount,rw /')
+	os.system('sudo cp /etc/direwolf.' + mode + ' /etc/direwolf.conf')
+	if mode == 'aprs':
+		initradio('144.3900','144.3900','0')
+		#As I understand it APRS is narrow 12.5khz bandwidth
+	if mode == 'iss':
+		syslog.syslog(syslog.LOG_INFO, 'ISS Profile loaded')
+		#But the ISS uses wide band 25 khz bandwidth
+		##Set the radio off frequency for the ISS to account for the doppler shift
+		#at the beginning of the pass as the ISS is moving towards us
+	os.system('sudo mount -o remount,ro /')
+	return()
+
+def direwolf(mode):
+	syslog.syslog(syslog.LOG_INFO, 'Restarting DireWolf to activate the ' + mode + ' profile')
+	os.system('sudo systemctl restart direwolf')
+	return()
+
+def listen(secs):
+	seconds = secs % (24 * 3600)
+	hours = seconds // 3600
+	seconds %= 3600
+	minutes = seconds // 60
+	seconds %= 60
+	syslog.syslog(syslog.LOG_INFO, 'Listening for the ISS for ' + str(int(minutes)) + ' minutes ' + str(int(seconds)) + ' seconds')
+	#For a rudimentary adjustment for doppler shift, we take the time of the total pass
+	#and split into 5 segments of 19%, 19%, 24%, 19%, and 19%
+	#shifting  2.5 khz  for each segment, with the 24% segment being simplex
+	if secs > 480:
+		doppler = int(secs) * .19
+		simplex = int(secs) * .24
+		initradio('145.8200','145.8300','1')
+		sleep(doppler)
+		syslog.syslog(syslog.LOG_INFO, 'adjusting for doppler shift')
+		initradio('145.8200','145.8300','1')
+		sleep(doppler)
+		syslog.syslog(syslog.LOG_INFO, 'adjusting for doppler shift')
+		initradio('145.8250','145.8250','1')
+		sleep(simplex)
+		#Now, the ISS should basically be overhead with minimal doppler shift
+		#So we tuned to the correct dead on frequency above.
+		syslog.syslog(syslog.LOG_INFO, 'adjusting for doppler shift')
+		initradio('145.8300','145.8200','1')
+		sleep(doppler)
+		syslog.syslog(syslog.LOG_INFO, 'adjusting for doppler shift')
+		initradio('145.8300','145.8200','1')
+		sleep(doppler)
+		#Now the final 3rd of the pass, so we'll again tune the frequency for the doppler shift
+		#as the ISS moves away from us.  Moving away from us, the shift for TX and RX is the opposite.
+	else:
+		#Short pass, no need for doppler compensation, reset to Simplex
+		initradio('145.82500','145.82500','1')
+		sleep(secs)
+	syslog.syslog(syslog.LOG_INFO, 'Returning to regular APRS profile')
+	return()
+
+def getnextpass(lat,lon,alt):
+	while True:
+		attempts = 0
+		while attempts < 3:
+			try:
+				issinfo = ISS_Info.iss_passes(lat,lon,alt,2)['response']
+			except:
+				syslog.syslog(syslog.LOG_ERR, 'Failed to retrieve a space shuttle pass')
+				attempts += 1
+				continue
+			else:
+				timenow = mktime(datetime.datetime.now().timetuple())
+				resp = dict(issinfo[0])
+				starttime = resp['risetime']
+				duration = resp['duration']
+				syslog.syslog(syslog.LOG_INFO, 'The International Space Station is passing overhead on ' + ctime(starttime))
+				if starttime < timenow:
+					syslog.syslog(syslog.LOG_INFO, 'Current pass is in progress or just occurred.  Using next pass')
+					dict.clear(resp)
+					resp = dict(issinfo[1])
+					starttime = resp['risetime']
+					duration = resp['duration']
+					syslog.syslog(syslog.LOG_INFO, 'The International Space Station is passing overhead next on ' + ctime(starttime))
+				waitforit(starttime)
+				syslog.syslog(syslog.LOG_INFO, 'Setting DireWolf to use ISS profile')
+				profile('iss')
+				direwolf('iss')
+				listen(duration)
+				profile('aprs')
+				direwolf('aprs')
+				dict.clear(resp)
+				break
+			finally:
+				list.clear(issinfo)
+	return()
+
+profile('aprs')
+direwolf('aprs')
+getnextpass(latitude,longitude,altitude)
