@@ -1,5 +1,5 @@
 # APRS_ISS
-The file is pretty well commented, basically what this does is its called by Systemd on startup.  Make sure you're running chrony or ntpd as a reasonably
+The code is pretty well commented, basically what this does is its called by Systemd on startup.  Make sure you're running chrony or ntpd as a reasonably
 accurate clock is crucial to successful ISS tracking.
 
 1.  You will create TWO direwolf config files, and place them in /etc  Name them direwolf.aprs for standard APRS operation and 
