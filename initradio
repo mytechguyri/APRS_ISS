@@ -264,7 +264,7 @@ def getnextpass(lat,lon,alt):
 			try:
 				issinfo = ISS_Info.iss_passes(lat,lon,alt,2)['response']
 			except:
-				syslog.syslog(syslog.LOG_ERR, 'Failed to retrieve a space shuttle pass')
+				syslog.syslog(syslog.LOG_ERR, 'Failed to retrieve an ISS pass')
 				attempts += 1
 				continue
 			else:
