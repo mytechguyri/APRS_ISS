@@ -1,0 +1,182 @@
+#!/usr/bin/env python3
+import syslog
+import os
+import serial
+import json
+import argparse
+import datetime
+import ephem
+from calendar import timegm
+from math import degrees
+from random import uniform
+import time
+from time import time, ctime, mktime, sleep
+
+syslog.openlog("initradio", facility=syslog.LOG_DAEMON)
+latitude = 41.4118
+longitude = -71.2398
+altitude = 20
+
+# Frequencies for each segment (replace with your calculated frequencies)
+frequencies = ['145.8220', '145.8230', '145.8240', '145.8250', '145.8260']
+
+def initradio(tx,rx,wide):
+    ser = serial.Serial('/dev/serial0',9600,timeout=2)
+    syslog.syslog(syslog.LOG_INFO, 'Initializing radio connection')
+    attempts = 0
+    while attempts < 3:
+        try:
+            success = False
+            ser.write(b'AT+DMOCONNECT\r\n')
+            resp = str(codecs.decode(ser.readline()))[0:13]
+            if resp == '+DMOCONNECT:0':
+                success = True
+        except:
+            attempts += 1
+            syslog.syslog(syslog.LOG_ERR, 'Initialization failed, retrying...: ' + resp)
+            continue
+        else:
+            if success:
+                syslog.syslog(syslog.LOG_INFO, 'Link to radio established.')
+            break
+        finally:
+            if not success:
+                syslog.syslog(syslog.LOG_ERR, 'Radio non responsive!  Shutting down: ' + resp)
+                os.system('sudo systemctl stop direwolf')
+                exit()
+
+def waitforit(eventtime):
+    current = mktime(datetime.datetime.now().timetuple())
+    if eventtime <= current:
+        delay = 0
+        syslog.syslog(syslog.LOG_INFO, "The ISS is passing overhead now, proceeding to acquire target")
+    else:
+        delta = eventtime - current
+        delay = max(0, delta - 5)
+        seconds = delay % (24 * 3600)
+        hours = seconds // 3600
+        seconds %= 3600
+        minutes = seconds // 60
+        seconds %= 60
+        syslog.syslog(syslog.LOG_INFO, "Waiting " + str(int(hours)) + " hours " + str(int(minutes)) + " minutes " + str(int(seconds)) + " seconds to acquire target on " + ctime(eventtime))
+        sleep(delay)
+        syslog.syslog(syslog.LOG_INFO, "The ISS is passing overhead now, proceeding to acquire target")
+    return()
+
+def profile(mode):
+    os.system ('sudo mount -o remount,rw /')
+    os.system('sudo cp /etc/direwolf.' + mode + ' /etc/direwolf.conf')
+    if mode == 'aprs':
+        initradio('144.3900','144.3900','0')
+    if mode == 'iss':
+        syslog.syslog(syslog.LOG_INFO, 'ISS Profile loaded')
+    os.system('sudo mount -o remount,ro /')
+    return()
+
+def direwolf(mode):
+    syslog.syslog(syslog.LOG_INFO, 'Restarting DireWolf to activate the ' + mode + ' profile')
+    os.system('sudo systemctl restart direwolf')
+    return()
+
+def listen(secs):
+    # Number of segments
+    num_segments = 5 if secs > 480 else 3
+
+    # Duration of each segment
+    segment_duration = secs / num_segments
+
+    for i in range(num_segments):
+        # Adjust the frequency
+        initradio(frequencies[i], frequencies[i], '1')
+
+        # Wait for the duration of the segment
+        sleep(segment_duration)
+
+        syslog.syslog(syslog.LOG_INFO, 'adjusting for doppler shift')
+
+def get_passes(lon, lat, alt, n):
+    # Get latest TLE of the ISS from NASA
+    iss_tle = urlopen('https://tle.ivanstanojevic.me/api/tle/25544').read() 
+    tle = json.loads(iss_tle)
+    iss = ephem.readtle(str(tle[0]), str(tle[1]), str(tle[2]))
+
+    # Set location
+    location = ephem.Observer()
+    location.lat = str(latitude)
+    location.long = str(longitude)
+    location.elevation = altitude
+
+    # Override refration calculation
+    location.pressure = 0
+    location.horizon = '10:00'
+
+    # Set time now
+    now = datetime.datetime.utcnow()
+    location.date = now
+
+    # Predict passes
+    passes = []
+    for p in range(n):
+        tr, azr, tt, altt, ts, azs = location.next_pass(iss)
+        duration = int((ts - tr) * 60 * 60 * 24)
+        year, month, day, hour, minute, second = tr.tuple()
+        dt = datetime.datetime(year, month, day, hour, minute, int(second))
+
+        if duration > 60:
+            passes.append({"risetime": timegm(dt.timetuple()), "duration": duration})
+
+        # Increase the time by more than a pass and less than an orbit
+        location.date = tr + 25*ephem.minute
+
+    # Return object
+    obj = {"request": {
+        "datetime": timegm(now.timetuple()),
+        "latitude": lat,
+        "longitude": lon,
+        "altitude": alt,
+        "passes": n,
+        },
+        "response": passes,
+    }
+
+    return obj
+
+def getnextpass(lat,lon,alt):
+    while True:
+        attempts = 0
+        while attempts < 3:
+            try:
+                issinfo = get_passes(lat,lon,alt,2)['response']
+            except:
+                syslog.syslog(syslog.LOG_ERR, 'Failed to retrieve an ISS pass')
+                attempts += 1
+                continue
+            else:
+                timenow = mktime(datetime.datetime.now().timetuple())
+                resp = dict(issinfo[0])
+                starttime = resp['risetime']
+                duration = resp['duration']
+                syslog.syslog(syslog.LOG_INFO, 'The International Space Station is passing overhead on ' + ctime(starttime))
+                if starttime < timenow:
+                    syslog.syslog(syslog.LOG_INFO, 'Current pass is in progress or just occurred.  Using next pass')
+                    dict.clear(resp)
+                    resp = dict(issinfo[1])
+                    starttime = resp['risetime']
+                    duration = resp['duration']
+                    syslog.syslog(syslog.LOG_INFO, 'The International Space Station is passing overhead next on ' + ctime(starttime))
+                waitforit(starttime)
+                syslog.syslog(syslog.LOG_INFO, 'Setting DireWolf to use ISS profile')
+                profile('iss')
+                direwolf('iss')
+                listen(duration)
+                profile('aprs')
+                direwolf('aprs')
+                dict.clear(resp)
+                break
+            finally:
+                list.clear(issinfo)
+    return()
+
+profile('aprs')
+direwolf('aprs')
+getnextpass(latitude,longitude,altitude)
