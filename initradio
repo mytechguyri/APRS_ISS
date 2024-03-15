@@ -5,7 +5,6 @@ import serial
 import json
 import argparse
 import datetime
-import ISS_Info
 import codecs
 import ephem
 from calendar import timegm
@@ -147,7 +146,7 @@ def profile(mode):
 		initradio('144.3900','144.3900','0')
 		#As I understand it APRS is narrow 12.5khz bandwidth
 	if mode == 'iss':
-		syslog.syslog(syslog.LOG_INFO, 'ISS Profile loaded')
+		initradio('syslog.syslog(syslog.LOG_INFO, 'ISS Profile loaded')
 		#But the ISS uses wide band 25 khz bandwidth
 		##Set the radio off frequency for the ISS to account for the doppler shift
 		#at the beginning of the pass as the ISS is moving towards us
@@ -159,6 +158,12 @@ def direwolf(mode):
 	os.system('sudo systemctl restart direwolf')
 	return()
 
+def get_segments(secs,begin,middle,end)
+    seg1 = secs * begin
+    seg2 = secs * middle
+    seg3 = secs * end
+    return (seg1, seg2, seg3)
+
 def listen(secs):
 	seconds = secs % (24 * 3600)
 	hours = seconds // 3600
@@ -168,44 +173,26 @@ def listen(secs):
 	syslog.syslog(syslog.LOG_INFO, 'Listening for the ISS for ' + str(int(minutes)) + ' minutes ' + str(int(seconds)) + ' seconds')
 	if secs <= 364:  #less than 10%
 		doppler = int(secs)
-	if secs <=468: #10%
-	if secs <=550: #26%
-	if secs <= 566: #63%
-	if secs <= 
+	if secs <=240: #Low Pass
+             segments = get_segments(secs,.10,.80,.10)
+	elif secs <=360: #Medium Pass
+             segments = get_segments(secs,.20,.60,.20)
+	else: #secs > 360 high pass
+            segments = get_segments(secs,.25,.50,.25)
+
 		#For a rudimentary adjustment for doppler shift, we take the time of the total pass
-	#and split into 7 segments of 19%, 19%, 24%, 19%, and 19%
+	#and split into 3 segments, for a low pass, 10-80-10, for a medium pass 20-60-20, and for a high pass 25-50-25
+        #For simplicity, we'll use 5 segments, but the shift will vary so for a low pass +1,0,0,0,-1 for a medium pass +2,+1,0,-1,-2 for a high pass +3,+2,+1,0,-1,-2,-3
 	#shifting  +3, +2, +1, 0, -1, -2, -3 khz, with the 24% segment being simplex
-	if secs > 480:
-		doppler = int(secs) * .19
-		simplex = int(secs) * .24
-		initradio('145.8220','145.8280','1')
-		sleep(doppler)
-		syslog.syslog(syslog.LOG_INFO, 'adjusting for doppler shift')
-		initradio('145.8230','145.8270','1')
-		sleep(doppler)
-		syslog.syslog(syslog.LOG_INFO, 'adjusting for doppler shift')
-		initradio('145.8240','145.8260','1')
-		sleep(doppler)
-		syslog.syslog(syslog.LOG_INFO, 'adjusting for doppler shift')
-		initradio('145.8250','145.8250','1')
-		sleep(simplex)
-		#Now, the ISS should basically be overhead with minimal doppler shift
-		#So we tuned to the correct dead on frequency above.
-		syslog.syslog(syslog.LOG_INFO, 'adjusting for doppler shift')
-		initradio('145.8260','145.8240','1')
-		sleep(doppler)
-		syslog.syslog(syslog.LOG_INFO, 'adjusting for doppler shift')
-		initradio('145.8270','145.8230','1')
-		sleep(doppler)
-		syslog.syslog(syslog.LOG_INFO, 'adjusting for doppler shift')
-		initradio('145.8280','145.8220','1')
-		sleep(doppler)
-		#Now the final 3rd of the pass, so we'll again tune the frequency for the doppler shift
-		#as the ISS moves away from us.  Moving away from us, the shift for TX and RX is the opposite.
-	else:
-		#Short pass, no need for doppler compensation, reset to Simplex
-		initradio('145.82500','145.82500','1')
-		sleep(secs)
+
+        initradio('145.8220','145.8280','0')
+	sleep(segments[0])
+	syslog.syslog(syslog.LOG_INFO, 'adjusting for doppler shift')
+	initradio('145.8250','145.8250','0')
+	sleep(segments[1])
+	syslog.syslog(syslog.LOG_INFO, 'adjusting for doppler shift')
+	initradio('145.8280','145.8220','0')
+	sleep(segments[2])
 	syslog.syslog(syslog.LOG_INFO, 'Returning to regular APRS profile')
 	return()
 
